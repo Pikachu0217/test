@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Todo 清单（纯 JS）</title>
+    <meta name="description" content="一个简单的纯 JavaScript Todo 应用，支持本地存储、筛选与导入导出。" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="app" id="app">
+      <header class="header">
+        <div class="title">
+          <h1>Todo 清单</h1>
+          <p class="subtitle">纯 JavaScript · 本地存储 · 支持导入导出</p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <form class="add" id="addForm" autocomplete="off">
+          <input
+            id="newTodoInput"
+            class="input"
+            type="text"
+            placeholder="输入任务内容，然后回车添加…"
+            maxlength="120"
+            aria-label="新增任务"
+          />
+          <button class="button primary" type="submit">添加</button>
+        </form>
+
+        <div class="toolbar">
+          <div class="filters" role="tablist" aria-label="筛选">
+            <button class="chip" data-filter="all" type="button">全部</button>
+            <button class="chip" data-filter="active" type="button">进行中</button>
+            <button class="chip" data-filter="done" type="button">已完成</button>
+          </div>
+
+          <div class="search">
+            <input
+              id="searchInput"
+              class="input"
+              type="search"
+              placeholder="搜索任务…"
+              aria-label="搜索任务"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="panel list">
+        <div class="listHeader">
+          <div class="stats" id="stats"></div>
+          <div class="actions">
+            <button class="button" id="exportBtn" type="button">导出 JSON</button>
+            <label class="button ghost fileButton" for="importFile">导入 JSON</label>
+            <input id="importFile" class="fileInput" type="file" accept="application/json" />
+          </div>
+        </div>
+
+        <ul class="todos" id="todoList" aria-label="任务列表"></ul>
+
+        <div class="listFooter">
+          <button class="button danger ghost" id="clearDoneBtn" type="button">清空已完成</button>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <small>数据仅保存在当前浏览器（localStorage）。</small>
+      </footer>
+    </main>
+
+    <template id="todoItemTpl">
+      <li class="todo">
+        <label class="todoLeft">
+          <input class="toggle" type="checkbox" />
+          <span class="text"></span>
+        </label>
+        <button class="iconBtn delete" type="button" aria-label="删除">×</button>
+      </li>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
+

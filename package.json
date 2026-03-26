@@ -1,0 +1,10 @@
+{
+  "name": "simple-js-webapp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A tiny zero-dependency JS web app with a local dev server.",
+  "scripts": {
+    "start": "node scripts/dev-server.js"
+  }
+}
+

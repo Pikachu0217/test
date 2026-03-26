@@ -1,0 +1,222 @@
+# 说明：
+# - 这是一个“Java 自动部署”的工作流模板：仅新增该文件，不会影响现有 `.github/workflows/pages.yml`。
+# - 为了不让当前纯前端仓库误触发失败：若探测不到 Java 项目（pom.xml/gradlew/build.gradle），会直接跳过并成功结束。
+#
+# 你需要做的最小改动（通常仅两处）：
+# 1) 如果你的 Java 项目不在仓库根目录：设置 `env.JAVA_PROJECT_DIR` 为实际目录
+# 2) 如果要“自动部署到服务器”：配置文末提到的 Secrets（DEPLOY_*）
+
+name: Java CI + Auto Deploy (Template)
+
+on:
+  push:
+    branches:
+      # 兼容不同默认分支名称
+      - main
+      - master
+  workflow_dispatch:
+
+# 权限说明：
+# - contents: 读取仓库代码
+# - packages: 推送 Docker 镜像到 GHCR（如果你不推镜像可去掉）
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: java-deploy
+  cancel-in-progress: true
+
+env:
+  # ===== Java 构建相关 =====
+  JAVA_DISTRIBUTION: temurin
+  JAVA_VERSION: "17"
+
+  # 如果你的 Java 项目在子目录（例如 backend/xxx），建议直接指定，提高稳定性
+  # 示例：JAVA_PROJECT_DIR: backend/youlai-boot
+  JAVA_PROJECT_DIR: ""
+
+  # ===== Docker/GHCR 相关（可选）=====
+  # 仅当 Java 项目目录下存在 Dockerfile 时，才会构建并推送镜像。
+  # 如不需要镜像推送（只做构建产物），把它改为 "false"。
+  DOCKER_PUSH: "true"
+
+  # 默认推送到 GHCR：ghcr.io/<owner>/<repo>
+  DOCKER_IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build_and_publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Java project
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1) 优先使用手动指定目录（最可靠）
+          if [[ -n "${JAVA_PROJECT_DIR:-}" ]]; then
+            project_dir="${JAVA_PROJECT_DIR}"
+          else
+            # 2) 自动探测：在前 4 层目录里找常见 Java 构建入口
+            project_dir=""
+            while IFS= read -r file; do
+              project_dir="$(dirname "$file")"
+              break
+            done < <(
+              find . -maxdepth 4 -type f \( \
+                -name pom.xml -o -name gradlew -o -name build.gradle -o -name build.gradle.kts \
+              \) | sort
+            )
+          fi
+
+          # 归一化路径输出：去掉开头的 ./；根目录输出为 .
+          project_dir="${project_dir#./}"
+          [[ -z "$project_dir" ]] && project_dir="."
+
+          # 判定是否确实存在 Java 项目入口
+          found="false"
+          tool=""
+          cache=""
+
+          if [[ -f "${project_dir}/pom.xml" ]]; then
+            found="true"
+            tool="maven"
+            cache="maven"
+          elif [[ -f "${project_dir}/gradlew" || -f "${project_dir}/build.gradle" || -f "${project_dir}/build.gradle.kts" ]]; then
+            found="true"
+            tool="gradle"
+            cache="gradle"
+          fi
+
+          dockerfile="false"
+          if [[ -f "${project_dir}/Dockerfile" ]]; then
+            dockerfile="true"
+          fi
+
+          echo "found=${found}" >> "$GITHUB_OUTPUT"
+          echo "project_dir=${project_dir}" >> "$GITHUB_OUTPUT"
+          echo "tool=${tool}" >> "$GITHUB_OUTPUT"
+          echo "cache=${cache}" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=${dockerfile}" >> "$GITHUB_OUTPUT"
+
+          echo "Detected:"
+          echo "- found:       ${found}"
+          echo "- project_dir: ${project_dir}"
+          echo "- tool:        ${tool}"
+          echo "- dockerfile:  ${dockerfile}"
+
+      - name: Skip (no Java project found)
+        if: steps.detect.outputs.found != 'true'
+        run: |
+          echo "本仓库未探测到 Java 项目（pom.xml/gradlew/build.gradle），跳过 Java 构建与部署。"
+          echo "如需启用：请在仓库根目录或子目录加入 Java 项目，或设置 env.JAVA_PROJECT_DIR。"
+
+      - name: Setup Java
+        if: steps.detect.outputs.found == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: ${{ steps.detect.outputs.cache }}
+
+      # ===== 构建：Maven =====
+      - name: Build (Maven)
+        if: steps.detect.outputs.tool == 'maven'
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "开始 Maven 构建：${PWD}"
+
+          # 优先使用 Maven Wrapper，保证一致性
+          if [[ -x "./mvnw" ]]; then
+            ./mvnw -B -DskipTests package
+          else
+            mvn -B -DskipTests package
+          fi
+
+      # ===== 构建：Gradle =====
+      - name: Build (Gradle)
+        if: steps.detect.outputs.tool == 'gradle'
+        working-directory: ${{ steps.detect.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "开始 Gradle 构建：${PWD}"
+
+          # 优先使用 Gradle Wrapper，保证一致性
+          if [[ -x "./gradlew" ]]; then
+            ./gradlew build -x test
+          else
+            gradle build -x test
+          fi
+
+      # ===== 可选：构建并推送 Docker 镜像到 GHCR =====
+      - name: Docker meta
+        id: meta
+        if: steps.detect.outputs.found == 'true' && steps.detect.outputs.dockerfile == 'true' && env.DOCKER_PUSH == 'true'
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          # 说明：
+          # - 始终推送一个“commit sha”版本，便于精准回滚
+          # - 默认分支额外推送 latest（非默认分支不会推 latest，避免污染）
+          tags: |
+            type=raw,value=${{ github.sha }}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: Login to GHCR
+        if: steps.detect.outputs.found == 'true' && steps.detect.outputs.dockerfile == 'true' && env.DOCKER_PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        if: steps.detect.outputs.found == 'true' && steps.detect.outputs.dockerfile == 'true' && env.DOCKER_PUSH == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.detect.outputs.project_dir }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Note (no Dockerfile)
+        if: steps.detect.outputs.found == 'true' && steps.detect.outputs.dockerfile != 'true'
+        run: |
+          echo "已完成 Java 构建，但未在项目目录发现 Dockerfile，因此不会构建/推送镜像。"
+          echo "如需自动部署到服务器：建议在 Java 项目目录添加 Dockerfile，并开启 env.DOCKER_PUSH。"
+
+  # ===== 可选：远程部署 =====
+  # 说明：
+  # - 不强制部署到某个云平台/容器平台，避免写死逻辑；你只需把远程执行脚本放到 DEPLOY_SCRIPT secret。
+  # - 只有当配置了 DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY / DEPLOY_SCRIPT 时才会运行。
+  deploy_via_ssh:
+    needs: build_and_publish
+    runs-on: ubuntu-latest
+    if: ${{ secrets.DEPLOY_HOST != '' && secrets.DEPLOY_USER != '' && secrets.DEPLOY_SSH_KEY != '' && secrets.DEPLOY_SCRIPT != '' }}
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          # 远程脚本建议自己维护（写在 Secret 里），示例思路：
+          # 1) docker login ghcr.io
+          # 2) docker pull ghcr.io/<owner>/<repo>:<sha>
+          # 3) docker compose up -d / systemctl restart / k8s rollout 等
+          script: |
+            set -e
+            export IMAGE="${{ env.DOCKER_IMAGE }}:${{ github.sha }}"
+            echo "准备部署镜像：$IMAGE"
+            ${{ secrets.DEPLOY_SCRIPT }}
+
